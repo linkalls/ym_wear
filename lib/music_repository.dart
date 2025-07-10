@@ -72,4 +72,27 @@ class MusicRepository {
   }
 
   // 他にも必要なAPIを追加
+
+  Future<List<Map<String, String>>> getRelatedMusic(String videoId) async {
+    await _init();
+    try {
+      final video = await _ytExplode.videos.get(VideoId(videoId));
+      final relatedVideosList = await _ytExplode.videos.getRelatedVideos(video);
+      if (relatedVideosList == null || relatedVideosList.isEmpty) return [];
+      final List<Map<String, String>> tracks = [];
+      for (final item in relatedVideosList) {
+        tracks.add({
+          'id': item.id.value,
+          'title': item.title,
+          'artist': item.author,
+          'duration': item.duration?.toString() ?? '',
+        });
+      }
+      return tracks;
+    } catch (e, stack) {
+      print('getRelatedMusic error: ' + e.toString());
+      print(stack);
+      return [];
+    }
+  }
 }

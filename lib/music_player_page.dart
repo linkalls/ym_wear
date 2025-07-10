@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:ym_wear/music_repository.dart';
 
@@ -16,11 +17,28 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
   Map<String, dynamic>? _musicDetails;
   bool _isLoading = true;
   late AudioPlayer _audioPlayer;
+  bool _navigated = false; // 追加
 
   @override
   void initState() {
     super.initState();
     _audioPlayer = AudioPlayer();
+    _audioPlayer.playerStateStream.listen((state) async {
+      if (state.processingState == ProcessingState.completed && !_navigated) {
+        _navigated = true; // 1回だけ遷移
+        if (widget.musicId != null && mounted) {
+          final repo = MusicRepository();
+          final related = await repo.getRelatedMusic(widget.musicId!);
+          if (related.isNotEmpty && related[0]['id'] != null) {
+            final nextId = related[0]['id']!;
+            final nextTitle = related[0]['title'] ?? '';
+            if (mounted) {
+              GoRouter.of(context).go('/player/$nextId', extra: nextTitle);
+            }
+          }
+        }
+      }
+    });
     _fetchMusicDetails();
   }
 
@@ -63,6 +81,145 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
     return '${twoDigitMinutes}:${twoDigitSeconds}';
   }
 
+  Widget _buildPlayerBody() {
+    if (_isLoading) {
+      return const CircularProgressIndicator();
+    } else if (_musicDetails != null && _musicDetails!['directUrl'] != null) {
+      return Column(
+        children: [
+          const SizedBox(height: 20),
+          StreamBuilder<Duration?>(
+            stream: _audioPlayer.durationStream,
+            builder: (context, snapshot) {
+              final duration = snapshot.data ?? Duration.zero;
+              return StreamBuilder<Duration>(
+                stream: _audioPlayer.positionStream,
+                builder: (context, posSnapshot) {
+                  final position = posSnapshot.data ?? Duration.zero;
+                  return Column(
+                    children: [
+                      Slider(
+                        value: position.inMilliseconds.toDouble().clamp(
+                          0,
+                          duration.inMilliseconds.toDouble(),
+                        ),
+                        min: 0,
+                        max: duration.inMilliseconds.toDouble() > 0
+                            ? duration.inMilliseconds.toDouble()
+                            : 1,
+                        onChanged: (v) {
+                          _audioPlayer.seek(Duration(milliseconds: v.toInt()));
+                        },
+                        activeColor: Colors.white,
+                        inactiveColor: Colors.white24,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              _formatDuration(position),
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 12,
+                              ),
+                            ),
+                            Text(
+                              _formatDuration(duration),
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: Icon(Icons.replay_10, color: Colors.white),
+                  iconSize: 32,
+                  tooltip: '10秒戻す',
+                  onPressed: () async {
+                    final pos = await _audioPlayer.position;
+                    _audioPlayer.seek(pos - Duration(seconds: 10));
+                  },
+                ),
+                const SizedBox(width: 4),
+                StreamBuilder<PlayerState>(
+                  stream: _audioPlayer.playerStateStream,
+                  builder: (context, snapshot) {
+                    final playerState = snapshot.data;
+                    final processingState = playerState?.processingState;
+                    final playing = playerState?.playing;
+                    if (processingState == ProcessingState.loading ||
+                        processingState == ProcessingState.buffering) {
+                      return const SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: CircularProgressIndicator(),
+                      );
+                    } else if (playing != true) {
+                      return IconButton(
+                        icon: const Icon(Icons.play_arrow, color: Colors.white),
+                        iconSize: 48.0,
+                        onPressed: _audioPlayer.play,
+                      );
+                    } else if (processingState != ProcessingState.completed) {
+                      return IconButton(
+                        icon: const Icon(Icons.pause, color: Colors.white),
+                        iconSize: 48.0,
+                        onPressed: _audioPlayer.pause,
+                      );
+                    } else {
+                      return IconButton(
+                        icon: const Icon(Icons.replay, color: Colors.white),
+                        iconSize: 48.0,
+                        onPressed: () => _audioPlayer.seek(Duration.zero),
+                      );
+                    }
+                  },
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  icon: Icon(Icons.forward_10, color: Colors.white),
+                  iconSize: 32,
+                  tooltip: '10秒進める',
+                  onPressed: () async {
+                    final pos = await _audioPlayer.position;
+                    final dur = await _audioPlayer.duration ?? Duration.zero;
+                    _audioPlayer.seek(
+                      (pos + Duration(seconds: 10)) < dur
+                          ? pos + Duration(seconds: 10)
+                          : dur,
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    } else {
+      return const Text(
+        'Direct URL not available.',
+        style: TextStyle(fontSize: 14, color: Colors.white54),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -82,175 +239,8 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
                   style: const TextStyle(fontSize: 14, color: Colors.white70),
                 ),
               const SizedBox(height: 20),
-              _isLoading
-                  ? const CircularProgressIndicator()
-                  : _musicDetails != null && _musicDetails!['directUrl'] != null
-                  ? Column(
-                      children: [
-                        const SizedBox(height: 20),
-                        StreamBuilder<Duration?>(
-                          stream: _audioPlayer.durationStream,
-                          builder: (context, snapshot) {
-                            final duration = snapshot.data ?? Duration.zero;
-                            return StreamBuilder<Duration>(
-                              stream: _audioPlayer.positionStream,
-                              builder: (context, posSnapshot) {
-                                final position =
-                                    posSnapshot.data ?? Duration.zero;
-                                return Column(
-                                  children: [
-                                    Slider(
-                                      value: position.inMilliseconds
-                                          .clamp(0, duration.inMilliseconds)
-                                          .toDouble(),
-                                      min: 0,
-                                      max:
-                                          duration.inMilliseconds.toDouble() > 0
-                                          ? duration.inMilliseconds.toDouble()
-                                          : 1,
-                                      onChanged: (v) {
-                                        _audioPlayer.seek(
-                                          Duration(milliseconds: v.toInt()),
-                                        );
-                                      },
-                                      activeColor: Colors.white,
-                                      inactiveColor: Colors.white24,
-                                    ),
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 16.0,
-                                      ),
-                                      child: Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text(
-                                            _formatDuration(position),
-                                            style: TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                          Text(
-                                            _formatDuration(duration),
-                                            style: TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                );
-                              },
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 16),
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              IconButton(
-                                icon: Icon(
-                                  Icons.replay_10,
-                                  color: Colors.white,
-                                ),
-                                iconSize: 32,
-                                tooltip: '10秒戻す',
-                                onPressed: () async {
-                                  final pos = await _audioPlayer.position;
-                                  _audioPlayer.seek(
-                                    pos - Duration(seconds: 10),
-                                  );
-                                },
-                              ),
-                              const SizedBox(width: 4),
-                              StreamBuilder<PlayerState>(
-                                stream: _audioPlayer.playerStateStream,
-                                builder: (context, snapshot) {
-                                  final playerState = snapshot.data;
-                                  final processingState =
-                                      playerState?.processingState;
-                                  final playing = playerState?.playing;
-                                  if (processingState ==
-                                          ProcessingState.loading ||
-                                      processingState ==
-                                          ProcessingState.buffering) {
-                                    return const SizedBox(
-                                      width: 48,
-                                      height: 48,
-                                      child: CircularProgressIndicator(),
-                                    );
-                                  } else if (playing != true) {
-                                    return IconButton(
-                                      icon: const Icon(
-                                        Icons.play_arrow,
-                                        color: Colors.white,
-                                      ),
-                                      iconSize: 48.0,
-                                      onPressed: _audioPlayer.play,
-                                    );
-                                  } else if (processingState !=
-                                      ProcessingState.completed) {
-                                    return IconButton(
-                                      icon: const Icon(
-                                        Icons.pause,
-                                        color: Colors.white,
-                                      ),
-                                      iconSize: 48.0,
-                                      onPressed: _audioPlayer.pause,
-                                    );
-                                  } else {
-                                    return IconButton(
-                                      icon: const Icon(
-                                        Icons.replay,
-                                        color: Colors.white,
-                                      ),
-                                      iconSize: 48.0,
-                                      onPressed: () =>
-                                          _audioPlayer.seek(Duration.zero),
-                                    );
-                                  }
-                                },
-                              ),
-                              const SizedBox(width: 4),
-                              IconButton(
-                                icon: Icon(
-                                  Icons.forward_10,
-                                  color: Colors.white,
-                                ),
-                                iconSize: 32,
-                                tooltip: '10秒進める',
-                                onPressed: () async {
-                                  final pos = await _audioPlayer.position;
-                                  final dur =
-                                      await _audioPlayer.duration ??
-                                      Duration.zero;
-                                  _audioPlayer.seek(
-                                    (pos + Duration(seconds: 10)) < dur
-                                        ? pos + Duration(seconds: 10)
-                                        : dur,
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    )
-                  : const Text(
-                      'Direct URL not available.',
-                      style: TextStyle(fontSize: 14, color: Colors.white54),
-                    ),
+              _buildPlayerBody(),
               const SizedBox(height: 10),
-              // const Text(
-              //   'Loading music...',
-              //   style: TextStyle(color: Colors.white54),
-              // ),
             ],
           ),
         ),
